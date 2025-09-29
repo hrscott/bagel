@@ -9,7 +9,8 @@ Copyright (c) 2025 Jakub Lála, Ayham Al-Saffar, Stefano Angioletti-Uberti
 from . import __version__ as bagel_version
 from .state import State
 from .chain import Chain, Residue
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Mapping, Sequence
 
 from .oracles.folding import FoldingOracle, FoldingResult
 from .constants import aa_dict
@@ -20,6 +21,33 @@ import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EvaluationResult:
+    """Container for scalar and vector metrics returned by :meth:`System.evaluate`."""
+
+    scalars: dict[str, float]
+    vector_metrics: dict[str, np.ndarray] = field(default_factory=dict)
+
+    def filter(self, allowed: Iterable[str] | None) -> 'EvaluationResult':
+        """Return a new :class:`EvaluationResult` with metrics restricted to ``allowed``."""
+
+        if allowed is None:
+            return self
+
+        allowed_set = set(allowed)
+        filtered_scalars = {key: value for key, value in self.scalars.items() if key in allowed_set}
+        filtered_vectors = {key: value for key, value in self.vector_metrics.items() if key in allowed_set}
+        return EvaluationResult(filtered_scalars, filtered_vectors)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-serialisable representation of the evaluation result."""
+
+        return {
+            'scalars': self.scalars,
+            'vector_metrics': {key: value.tolist() for key, value in self.vector_metrics.items()},
+        }
 
 
 @dataclass
@@ -39,6 +67,74 @@ class System:
         if self.total_energy is None:
             self.total_energy = np.sum([state.get_energy() for state in self.states])
         return self.total_energy
+
+    def evaluate(
+        self,
+        objectives: Sequence[str] | Sequence[Any] | None = None,
+    ) -> EvaluationResult:
+        """Evaluate the system and return scalar and vector metrics.
+
+        Parameters
+        ----------
+        objectives:
+            Optional sequence of objective specifications. Elements can either be
+            strings representing metric names, or objects exposing a ``metric``
+            attribute. When provided, only metrics whose names match the supplied
+            identifiers are returned.
+        """
+
+        scalar_metrics: dict[str, float] = {}
+        vector_metrics: dict[str, np.ndarray] = {}
+
+        allowed_metrics: set[str] | None = None
+        if objectives:
+            allowed_metrics = set()
+            for objective in objectives:
+                if isinstance(objective, str):
+                    allowed_metrics.add(objective)
+                elif hasattr(objective, 'metric'):
+                    allowed_metrics.add(getattr(objective, 'metric'))
+                else:
+                    allowed_metrics.add(str(objective))
+
+        state_energies: list[float] = []
+
+        for state in self.states:
+            state_energy = float(state.get_energy())
+            state_energies.append(state_energy)
+            metric_name = f'{state.name}:state_energy'
+            if allowed_metrics is None or metric_name in allowed_metrics:
+                scalar_metrics[metric_name] = state_energy
+
+            for term_name, term_value in state._energy_terms_value.items():
+                metric_name = f'{state.name}:{term_name}'
+                if allowed_metrics is None or metric_name in allowed_metrics or term_name in (allowed_metrics or set()):
+                    scalar_metrics[metric_name] = float(term_value)
+
+            for oracle, result in state._oracles_result.items():
+                vector_data: Any = getattr(result, 'vector_metrics', None)
+                if callable(vector_data):
+                    vector_data = vector_data()
+                if not vector_data:
+                    continue
+                if not isinstance(vector_data, Mapping):
+                    logger.debug(
+                        'Ignoring vector metrics from %s because they are not mapping-like',
+                        type(result).__name__,
+                    )
+                    continue
+                for key, value in vector_data.items():
+                    metric_name = f'{state.name}:{key}'
+                    if allowed_metrics is not None and metric_name not in allowed_metrics and key not in allowed_metrics:
+                        continue
+                    vector_metrics[metric_name] = np.asarray(value, dtype=float)
+
+        system_energy = float(np.sum(state_energies)) if state_energies else 0.0
+        self.total_energy = system_energy
+        if allowed_metrics is None or 'system_energy' in allowed_metrics:
+            scalar_metrics['system_energy'] = system_energy
+
+        return EvaluationResult(scalars=scalar_metrics, vector_metrics=vector_metrics)
 
     def dump_logs(self, step: int, path: pl.Path, save_structure: bool = True) -> None:
         r"""
