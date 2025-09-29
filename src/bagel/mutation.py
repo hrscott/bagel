@@ -11,6 +11,7 @@ import numpy as np
 # from .folding import FoldingAlgorithm
 from .chain import Chain
 from .system import System
+from .objectives import DEFAULT_OBJECTIVE_ID
 from .constants import mutation_bias_no_cystein
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
@@ -101,9 +102,14 @@ class MutationProtocol(ABC):
 
     def reset_system(self, system: System) -> System:
         system.total_energy = None
+        system._objective_totals = {}
         for state in system.states:
             state._energy_terms_value = {}
             state._oracles_result = OraclesResultDict()
+            state._objective_metrics_weighted = {}
+            state._objective_metrics_raw = {}
+            state._constraint_metrics_weighted = {}
+            state._constraint_metrics_raw = {}
         return system
 
 
@@ -139,7 +145,9 @@ class Canonical(MutationProtocol):
             chain = self.choose_chain(system)
             self.mutate_random_residue(chain=chain)
         self.reset_system(system=system)  # Reset the system so it knows it must recalculate fold and energy
-        delta_energy = system.get_total_energy() - old_system.get_total_energy()
+        new_energy = system.evaluate([DEFAULT_OBJECTIVE_ID]).get(DEFAULT_OBJECTIVE_ID, 0.0)
+        old_energy = old_system.evaluate([DEFAULT_OBJECTIVE_ID]).get(DEFAULT_OBJECTIVE_ID, 0.0)
+        delta_energy = new_energy - old_energy
         return system, delta_energy
 
 
@@ -236,6 +244,8 @@ class GrandCanonical(MutationProtocol):
                 self.remove_random_residue(chain=chain, system=system)
 
         self.reset_system(system=system)  # Reset the system so it knows it must recalculate fold and energy
-        delta_energy = system.get_total_energy() - old_system.get_total_energy()
+        new_energy = system.evaluate([DEFAULT_OBJECTIVE_ID]).get(DEFAULT_OBJECTIVE_ID, 0.0)
+        old_energy = old_system.evaluate([DEFAULT_OBJECTIVE_ID]).get(DEFAULT_OBJECTIVE_ID, 0.0)
+        delta_energy = new_energy - old_energy
 
         return system, delta_energy

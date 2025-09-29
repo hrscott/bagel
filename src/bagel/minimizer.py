@@ -9,6 +9,7 @@ Copyright (c) 2025 Jakub Lála, Ayham Al-Saffar, Stefano Angioletti-Uberti
 import pathlib as pl
 from .system import System
 from .mutation import MutationProtocol
+from .objectives import DEFAULT_OBJECTIVE_ID
 from abc import ABC, abstractmethod
 from typing import Callable, Any
 import numpy as np
@@ -188,7 +189,7 @@ class MonteCarloMinimizer(Minimizer):
 
     def minimize_system(self, system: System) -> System:
         """Minimize system using Monte Carlo method."""
-        system.get_total_energy()  # update the energy internally
+        system.evaluate([DEFAULT_OBJECTIVE_ID])  # update the energy internally
         best_system = system.__copy__()
         assert system.total_energy is not None, 'Cannot start without system having a calculated energy'
         assert best_system.total_energy is not None, (

@@ -2,6 +2,8 @@ import bagel as bg
 import pandas as pd
 import pathlib as pl
 import shutil
+from typing import Any, Callable
+from bagel.objectives import DEFAULT_OBJECTIVE_ID, ConstraintSpec, ObjectiveSpec, default_objective_spec
 from biotite.sequence.io.fasta import FastaFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 import numpy as np
@@ -154,9 +156,65 @@ def test_system_states_still_reference_shared_chain_object_after_copy_method(sha
     assert copied_system.states[0].chains[0] == copied_system.states[1].chains[0]
 
 
-def test_system_get_total_energy_gives_correct_output(mixed_system: bg.System) -> None:
-    for state in mixed_system.states:
-        state.get_energy = Mock()  # disable method for easier testing
-    total_energy = mixed_system.get_total_energy()
-    # state 0: energy=-0.5, state 1: energy=0.1
-    assert np.isclose(total_energy, (-0.5 + 0.1))  # system energy is sum of state energies
+def test_system_evaluate_gives_correct_output(mixed_system: bg.System) -> None:
+    contributions = [-0.5, 0.1]
+
+    for state, contribution in zip(mixed_system.states, contributions):
+        def make_side_effect(value: float, target_state: bg.State) -> Callable[[dict[str, Any]], float]:
+            def side_effect(_: dict[str, Any]) -> float:
+                target_state._objective_metrics_weighted = {DEFAULT_OBJECTIVE_ID: value}
+                return value
+
+            return side_effect
+
+        state.get_energy = Mock(side_effect=make_side_effect(contribution, state))
+
+    totals = mixed_system.evaluate([DEFAULT_OBJECTIVE_ID])
+
+    assert np.isclose(totals[DEFAULT_OBJECTIVE_ID], sum(contributions))
+    assert np.isclose(mixed_system.total_energy, sum(contributions))
+
+
+def test_system_multi_objective_delta_constraint() -> None:
+    class DummyOracle(bg.oracles.base.Oracle):
+        def predict(self, chains):
+            return self.result_class()
+
+    dummy_oracle = DummyOracle()
+
+    class MockEnergy(bg.energies.EnergyTerm):
+        def __init__(self, name: str, metrics: dict[str, float]) -> None:
+            super().__init__(name=name, oracle=dummy_oracle, inheritable=False, weight=1.0)
+            self._metrics = metrics
+
+        def compute(self, oracles_result: bg.oracles.OraclesResultDict) -> bg.energies.EnergyTermResult:
+            return bg.energies.EnergyTermResult(
+                objectives=self._metrics,
+                constraints={'binding_margin': self._metrics['binding']},
+            )
+
+    def make_state(value_total: float, value_binding: float, name: str) -> bg.State:
+        term = MockEnergy(name=f'{name}_energy', metrics={DEFAULT_OBJECTIVE_ID: value_total, 'binding': value_binding})
+        state = bg.State(name=name, chains=[], energy_terms=[term])
+        state._oracles_result = bg.oracles.OraclesResultDict({dummy_oracle: dummy_oracle.result_class()})
+        return state
+
+    state_a = make_state(1.0, -2.0, 'state_a')
+    state_b = make_state(0.5, -1.0, 'state_b')
+
+    system = bg.System(states=[state_a, state_b])
+    binding_spec = ObjectiveSpec(
+        objective_id='binding',
+        aggregation='delta',
+        weight=1.0,
+        constraints=(ConstraintSpec(constraint_id='binding_margin', aggregation='delta', weight=1.0),),
+    )
+    total_spec = default_objective_spec()
+    system.objective_specs = {total_spec.objective_id: total_spec, binding_spec.objective_id: binding_spec}
+
+    totals = system.evaluate([DEFAULT_OBJECTIVE_ID, 'binding'])
+
+    assert pytest.approx(totals[DEFAULT_OBJECTIVE_ID]) == 1.5
+    assert pytest.approx(totals['binding']) == -1.0
+    assert pytest.approx(system.states[0]._constraint_metrics_weighted['binding_margin']) == -2.0
+    assert pytest.approx(system.states[1]._constraint_metrics_weighted['binding_margin']) == -1.0

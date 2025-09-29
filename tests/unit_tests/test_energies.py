@@ -1,5 +1,6 @@
 import os
 import bagel as bg
+from bagel.objectives import DEFAULT_OBJECTIVE_ID
 from bagel.oracles import OraclesResultDict
 from biotite.structure import AtomArray, sasa, annotate_sse, get_residue_count, concatenate, Atom, array
 from biotite.structure.io import load_structure
@@ -7,6 +8,12 @@ import numpy as np
 from unittest.mock import Mock, patch
 import copy
 import pytest
+
+
+def assert_default_objective(result: bg.energies.EnergyTermResult, energy: bg.energies.EnergyTerm, expected: float) -> None:
+    value = result.objectives[DEFAULT_OBJECTIVE_ID]
+    assert np.isclose(value, expected)
+    assert np.isclose(value * energy.weight, expected * energy.weight)
 
 
 def test_residue_list_to_group_function(residues: list[bg.Residue]) -> None:
@@ -232,9 +239,8 @@ def test_PTMEnergy(
     mock_folding_result.ptm = 0.7
     energy = bg.energies.PTMEnergy(oracle=fake_esmfold, weight=2.0)
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
-    assert np.isclose(unweighted_energy, -0.7)
-    assert np.isclose(weighted_energy, -0.7 * 2.0)
+    result = energy.compute(oracles_result=oracles_result)
+    assert_default_objective(result, energy, -0.7)
 
 
 def test_PLDDTEnergy(
@@ -247,9 +253,8 @@ def test_PLDDTEnergy(
     mock_folding_result.structure = small_structure
     energy = bg.energies.PLDDTEnergy(oracle=fake_esmfold, residues=small_structure_residues[:2], weight=2.0)
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
-    assert np.isclose(unweighted_energy, -0.3)  # avoids float rounding errors
-    assert np.isclose(weighted_energy, -0.6)
+    result = energy.compute(oracles_result=oracles_result)
+    assert_default_objective(result, energy, -0.3)  # avoids float rounding errors
 
 
 def test_OverallPLDDTEnergy(
@@ -263,9 +268,9 @@ def test_OverallPLDDTEnergy(
     folding_result.local_plddt = np.array([0.2, 0.4, 0.6]).reshape(1, 3)
     energy = bg.energies.OverallPLDDTEnergy(oracle=fake_esmfold, weight=2.0)
     oracles_result = OraclesResultDict({fake_esmfold: folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
-    assert np.isclose(unweighted_energy, -0.4), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, -0.8), 'weighted energy is incorrect'
+    result = energy.compute(oracles_result=oracles_result)
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], -0.4), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, -0.8), 'weighted energy is incorrect'
 
 
 def test_solvent_accessible_surface_area_function_gives_expected_return_array(small_structure: AtomArray) -> None:
@@ -287,10 +292,10 @@ def test_SurfaceAreaEnergy(
     mock_folding_result.structure = small_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
     # returns mean of normalized sasa over given residues
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     value = 1 / (22 * 2)  # max sasa is 22, and there are 2 atoms in the first residue
-    assert np.isclose(unweighted_energy, value), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, value * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], value), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, value * 2), 'weighted energy is incorrect'
 
 
 @patch('bagel.energies.sasa')
@@ -308,10 +313,10 @@ def test_HydrophobicEnergy(
     mock_folding_result.structure = small_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
     # returns sum of normalized sasa for hydrophobic atoms, divided by the number of atoms in given residues
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     value = 2 / 4  # 4 atoms in given residues, only 2 are part of hydrophobic residue
-    assert np.isclose(unweighted_energy, value), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, value * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], value), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, value * 2), 'weighted energy is incorrect'
 
 
 def test_PAEEnergy_with_cross_term_only(
@@ -324,11 +329,11 @@ def test_PAEEnergy_with_cross_term_only(
     residues = sum([chain.residues for chain in mixed_structure_state.chains], start=[])
     energy = bg.energies.PAEEnergy(oracle=fake_esmfold, residues=[residues[1:6:2], residues[2:7:2]], weight=2.0)
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     relevant_PAEs = [9, 11, 13, 15, 17, 19, 23, 25, 27, 29, 31, 33, 37, 39, 41, 43, 45, 47]
     # sum of relevant PAEs / (num PAEs * max PAE)
-    assert np.isclose(unweighted_energy, np.mean(relevant_PAEs) / 30), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, np.mean(relevant_PAEs) / 30 * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], np.mean(relevant_PAEs) / 30), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, np.mean(relevant_PAEs) / 30 * 2), 'weighted energy is incorrect'
 
 
 def test_PAEEnergy_without_cross_term_only(
@@ -346,11 +351,11 @@ def test_PAEEnergy_without_cross_term_only(
         weight=2.0,
     )
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     relevant_PAEs = [9, 12, 13, 15, 19, 20, 36, 37, 41, 43, 44, 47]
     # sum of relevant PAEs / (num PAEs * max PAE)
-    assert np.isclose(unweighted_energy, np.mean(relevant_PAEs) / 30), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, np.mean(relevant_PAEs) / 30 * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], np.mean(relevant_PAEs) / 30), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, np.mean(relevant_PAEs) / 30 * 2), 'weighted energy is incorrect'
 
 
 def test_PAEEnergy_of_residues_with_itself(
@@ -368,11 +373,11 @@ def test_PAEEnergy_of_residues_with_itself(
         weight=2.0,
     )
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     relevant_PAEs = [8, 10, 12, 22, 24, 26, 36, 38, 40]
     # sum of relevant PAEs / (num PAEs * max PAE)
-    assert np.isclose(unweighted_energy, np.mean(relevant_PAEs) / 30), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, np.mean(relevant_PAEs) / 30 * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], np.mean(relevant_PAEs) / 30), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, np.mean(relevant_PAEs) / 30 * 2), 'weighted energy is incorrect'
 
 
 def test_FlexEvoBindEnergy_Unsymmetrized(
@@ -395,11 +400,11 @@ def test_FlexEvoBindEnergy_Unsymmetrized(
 
     print(f'PLDDT = {oracles_result[fake_esmfold].local_plddt}')
     print(f'structure = {oracles_result[fake_esmfold].structure}')
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
 
     # PLDDT weight with PLDDT = 0.5 (in denominator) and min_dist = 1.0 (in numerator)
-    assert np.isclose(unweighted_energy, 2.0 * np.sqrt(5) / 2), f'unweighted energy is incorrect {unweighted_energy}'
-    assert np.isclose(weighted_energy, 4.0 * np.sqrt(5) / 2), f'weighted energy is incorrect {weighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], 2.0 * np.sqrt(5) / 2), f'unweighted energy is incorrect {result.objectives[DEFAULT_OBJECTIVE_ID]}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 4.0 * np.sqrt(5) / 2), f'weighted energy is incorrect {result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight}'
 
     energy = bg.energies.FlexEvoBindEnergy(
         oracle=fake_esmfold,
@@ -409,10 +414,10 @@ def test_FlexEvoBindEnergy_Unsymmetrized(
         weight=2.0,
     )
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
 
-    assert np.isclose(unweighted_energy, np.sqrt(5) / 2), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, np.sqrt(5)), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], np.sqrt(5) / 2), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, np.sqrt(5)), 'weighted energy is incorrect'
 
 
 def test_FlexEvobindEnergy_Symmetrized(
@@ -435,11 +440,11 @@ def test_FlexEvobindEnergy_Symmetrized(
 
     print(f'PLDDT = {oracles_result[fake_esmfold].local_plddt}')
     print(f'structure = {oracles_result[fake_esmfold].structure}')
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
 
     # PLDDT weight with PLDDT = 0.5 (in denominator) and min_dist = 1.0 (in numerator)
-    assert np.isclose(unweighted_energy, np.sqrt(5.0)), f'unweighted energy is incorrect {unweighted_energy}'
-    assert np.isclose(weighted_energy, 2.0 * np.sqrt(5.0)), f'weighted energy is incorrect {weighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], np.sqrt(5.0)), f'unweighted energy is incorrect {result.objectives[DEFAULT_OBJECTIVE_ID]}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 2.0 * np.sqrt(5.0)), f'weighted energy is incorrect {result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight}'
 
     energy = bg.energies.FlexEvoBindEnergy(
         oracle=fake_esmfold,
@@ -449,10 +454,10 @@ def test_FlexEvobindEnergy_Symmetrized(
         weight=2.0,
     )
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
 
-    assert np.isclose(unweighted_energy, np.sqrt(5.0) / 2.0), 'no-plddt and unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, np.sqrt(5.0)), 'no-plddt and weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], np.sqrt(5.0) / 2.0), 'no-plddt and unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, np.sqrt(5.0)), 'no-plddt and weighted energy is incorrect'
 
 
 def test_RingSymmetryEnergy(
@@ -468,11 +473,11 @@ def test_RingSymmetryEnergy(
     mock_folding_result = Mock(bg.oracles.folding.ESMFoldResult)
     mock_folding_result.structure = square_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # centroids of each residue backbone make a 2d square of length 1
     value = np.std([1, 1, 2**0.5] * 4)
-    assert np.isclose(unweighted_energy, value), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, value * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], value), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, value * 2), 'weighted energy is incorrect'
 
 
 # --- ChemicalPotentialEnergy ---
@@ -490,12 +495,12 @@ def test_ChemicalPotentialEnergy(
         oracle=fake_esmfold, chemical_potential=-1.0, target_size=8.0, power=0.5, weight=2.0
     )
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # Energy should be: chemical_potential * ( abs( number_of_residues - target_size ) )**power
     # -1.0 * ( abs( 4.0 - 8.0 )**0.5 ) = -1.0 * ( 4**0.5 ) = -1.0 * 2.0 = -2.0
     value = -2.0
-    assert np.isclose(unweighted_energy, value), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, value * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], value), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, value * 2), 'weighted energy is incorrect'
 
 
 def test_ChemicalPotentialEnergy_with_embedding_oracle(
@@ -515,10 +520,10 @@ def test_ChemicalPotentialEnergy_with_embedding_oracle(
     energy = bg.energies.ChemicalPotentialEnergy(
         oracle=fake_esm2, power=2.0, target_size=5, chemical_potential=1.5, weight=2.0
     )
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # Should be: 1.5 * (abs(3-5))**2 = 1.5 * 4 = 6.0
-    assert np.isclose(unweighted_energy, 6.0), f'unweighted energy is incorrect: {unweighted_energy}'
-    assert np.isclose(weighted_energy, 12.0), f'weighted energy is incorrect: {weighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], 6.0), f'unweighted energy is incorrect: {result.objectives[DEFAULT_OBJECTIVE_ID]}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 12.0), f'weighted energy is incorrect: {result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight}'
 
 
 def test_RingSymmetryEnergy_with_direct_neighbours_only(
@@ -535,10 +540,10 @@ def test_RingSymmetryEnergy_with_direct_neighbours_only(
         direct_neighbours_only=True,
         weight=2.0,
     )
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # centroids of each residue make a 2d square of length 1. The direct neighbour distance for each atom is 1
-    assert np.isclose(unweighted_energy, 0), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, 0 * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], 0), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 0 * 2), 'weighted energy is incorrect'
 
 
 def test_SeparationEnergy(
@@ -554,11 +559,11 @@ def test_SeparationEnergy(
     mock_folding_result = Mock(bg.oracles.folding.ESMFoldResult)
     mock_folding_result.structure = square_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # distance between the centroids of the bottom corners and top corners for a square of length 1 is 1
     value = 1.0
-    assert np.isclose(unweighted_energy, value), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, value * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], value), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, value * 2), 'weighted energy is incorrect'
 
 
 def make_harmonic_function(cutoff: float, stiffness: float):
@@ -587,13 +592,13 @@ def test_SeparationEnergyNonLinear(
         function=lambda x, x0=1.01, k=1.0: 0.0 if x < x0 else 0.5 * k * (x - x0) ** 2,
         weight=2.0,
     )
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # harmonic potential but below cutoff distance, this should be 0 always
-    assert np.isclose(unweighted_energy, 0.0), (
-        f'unweighted energy is incorrect, 0 expected below harmonic cutoff but found {unweighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], 0.0), (
+        f'unweighted energy is incorrect, 0 expected below harmonic cutoff but found {result.objectives[DEFAULT_OBJECTIVE_ID]}'
     )
-    assert np.isclose(weighted_energy, 0.0), (
-        f'weighted energy is incorrect, 0 expected below harmonic cutoff but found {weighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 0.0), (
+        f'weighted energy is incorrect, 0 expected below harmonic cutoff but found {result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight}'
     )
 
     energy = bg.energies.SeparationEnergy(
@@ -602,13 +607,13 @@ def test_SeparationEnergyNonLinear(
         function=make_harmonic_function(0.5, 1.0),
         weight=2.0,
     )
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # harmonic potential 0.5 above cutoff distance, this should be 1/2 * (x-x0)**2 = 1/8
-    assert np.isclose(unweighted_energy, 1.0 / 8.0), (
-        f'unweighted energy is incorrect, {1.0 / 8.0} expected but found {unweighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], 1.0 / 8.0), (
+        f'unweighted energy is incorrect, {1.0 / 8.0} expected but found {result.objectives[DEFAULT_OBJECTIVE_ID]}'
     )
-    assert np.isclose(weighted_energy, 1.0 / 4.0), (
-        f'weighted energy is incorrect, {1.0 / 4.0} expected but found {weighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 1.0 / 4.0), (
+        f'weighted energy is incorrect, {1.0 / 4.0} expected but found {result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight}'
     )
 
     energy = bg.energies.SeparationEnergy(
@@ -617,13 +622,13 @@ def test_SeparationEnergyNonLinear(
         function=lambda x, x0=1.0, k=10.0: 1.0 / (1.0 + np.exp(-k * (x - x0))),
         weight=2.0,
     )
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # sigmoidal potential at cutoff distance, this should be 1.0/2.0 regardless of value of k
-    assert np.isclose(unweighted_energy, 0.5), (
-        f'unweighted energy is incorrect, 0.5 expected at x0 but found {unweighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], 0.5), (
+        f'unweighted energy is incorrect, 0.5 expected at x0 but found {result.objectives[DEFAULT_OBJECTIVE_ID]}'
     )
-    assert np.isclose(weighted_energy, 1.0), (
-        f'weighted energy is incorrect, 1.0 expected at x0 but found {weighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 1.0), (
+        f'weighted energy is incorrect, 1.0 expected at x0 but found {result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight}'
     )
 
     kk = 10.0
@@ -633,15 +638,15 @@ def test_SeparationEnergyNonLinear(
         function=lambda x, x0=0.0, k=kk: 1.0 / (1.0 + np.exp(-k * (x - x0))),
         weight=2.0,
     )
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
 
     # sigmoidal potential 1.0 above cutoff distance, this should be 1.0 / (1.0 + exp(-k))
     value = 1.0 / (1.0 + np.exp(-kk))
-    assert np.isclose(unweighted_energy, value), (
-        f'unweighted energy is incorrect, {value} expected but found {unweighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], value), (
+        f'unweighted energy is incorrect, {value} expected but found {result.objectives[DEFAULT_OBJECTIVE_ID]}'
     )
-    assert np.isclose(weighted_energy, 2.0 * value), (
-        f'weighted energy is incorrect, {2.0 * value} expected but found {weighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 2.0 * value), (
+        f'weighted energy is incorrect, {2.0 * value} expected but found {result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight}'
     )
 
 
@@ -658,11 +663,11 @@ def test_GlobularEnergy(
     mock_folding_result = Mock(bg.oracles.folding.ESMFoldResult)
     mock_folding_result.structure = square_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # the centroid of the first 2 residue backbones are at [0, 0.5, 0] coords. The 4 atoms form a square of length
     # 1 around the centroid, equidistance from it.
-    assert np.isclose(unweighted_energy, 0), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, 0 * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], 0), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 0 * 2), 'weighted energy is incorrect'
 
 
 def test_TemplateMatchEnergy_gives_zero_distance_for_rotated_and_shifted_structure(
@@ -683,9 +688,9 @@ def test_TemplateMatchEnergy_gives_zero_distance_for_rotated_and_shifted_structu
     mock_folding_result = Mock(bg.oracles.folding.ESMFoldResult)
     mock_folding_result.structure = square_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
-    assert np.isclose(unweighted_energy, 0, atol=1e-7), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, 0 * 2, atol=1e-7), 'weighted energy is incorrect'
+    result = energy.compute(oracles_result=oracles_result)
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], 0, atol=1e-7), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 0 * 2, atol=1e-7), 'weighted energy is incorrect'
 
 
 def test_TemplateMatchEnergy_gives_zero_distance_for_rotated_and_shifted_structure_using_distogram_metric(
@@ -707,9 +712,9 @@ def test_TemplateMatchEnergy_gives_zero_distance_for_rotated_and_shifted_structu
     mock_folding_result = Mock(bg.oracles.folding.ESMFoldResult)
     mock_folding_result.structure = square_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
-    assert np.isclose(unweighted_energy, 0, atol=1e-7), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, 0 * 2), 'weighted energy is incorrect'
+    result = energy.compute(oracles_result=oracles_result)
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], 0, atol=1e-7), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 0 * 2), 'weighted energy is incorrect'
 
 
 def test_TemplateMatchEnergy_is_correct_with_simple_structure(
@@ -730,13 +735,13 @@ def test_TemplateMatchEnergy_is_correct_with_simple_structure(
     mock_folding_result = Mock(bg.oracles.folding.ESMFoldResult)
     mock_folding_result.structure = line_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # it is only 3 atoms because you only count for backbone atoms, defined as of type C, N and CA
     value = np.mean([0.02, 0.0, 0.02]) ** 0.5
-    assert np.isclose(unweighted_energy, value), (
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], value), (
         'unweighted energy is incorrect'
     )  # first and last template atoms sqrt(0.02) away
-    assert np.isclose(weighted_energy, value * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, value * 2), 'weighted energy is incorrect'
 
 
 def test_TemplateMatchEnergy_is_correct_with_simple_structure_using_distogram_metric(
@@ -758,11 +763,11 @@ def test_TemplateMatchEnergy_is_correct_with_simple_structure_using_distogram_me
     mock_folding_result = Mock(bg.oracles.folding.ESMFoldResult)
     mock_folding_result.structure = line_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     unique_distogram_distances_squared = [0.02, 0.08, 0.02] * 2  # requires a small sketch to make sense of
     value = np.mean(unique_distogram_distances_squared) ** 0.5
-    assert np.isclose(unweighted_energy, value), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, value * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], value), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, value * 2), 'weighted energy is incorrect'
 
 
 def test_TemplateMatchEnergy_is_correct_with_different_atom_order(
@@ -783,10 +788,10 @@ def test_TemplateMatchEnergy_is_correct_with_different_atom_order(
     mock_folding_result = Mock(bg.oracles.folding.ESMFoldResult)
     mock_folding_result.structure = formolase_ordered_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     value = 0.0
-    assert np.isclose(unweighted_energy, value, atol=1e-5), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, value * 2, atol=1e-5), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], value, atol=1e-5), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, value * 2, atol=1e-5), 'weighted energy is incorrect'
 
 
 def test_secondary_structure_elements_function_gives_expected_return_array(small_structure: AtomArray) -> None:
@@ -809,10 +814,10 @@ def test_SecondaryStructureEnergy(
     mock_folding_result = Mock(bg.oracles.folding.ESMFoldResult)
     mock_folding_result.structure = small_structure
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     value = 2 / 3
-    assert np.isclose(unweighted_energy, value), 'unweighted energy is incorrect'
-    assert np.isclose(weighted_energy, value * 2), 'weighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], value), 'unweighted energy is incorrect'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, value * 2), 'weighted energy is incorrect'
 
 
 def test_embeddings_similarity_energy(
@@ -916,15 +921,15 @@ def test_LISEnergy(
     residues = sum([chain.residues for chain in mixed_structure_state.chains], start=[])
     energy = bg.energies.LISEnergy(oracle=fake_esmfold, residues=[residues[0:2], residues[2:4]], weight=2.0)
     oracles_result = OraclesResultDict({fake_esmfold: mock_folding_result})
-    unweighted_energy, weighted_energy = energy.compute(oracles_result=oracles_result)
+    result = energy.compute(oracles_result=oracles_result)
     # relevant_PAEs = np.array( [2, 3, 9, 10, 14, 15, 21, 22] )
     # mask = relevant_PAEs <= 12.0
     # relevant_PAEs = relevant_PAEs[mask]
     # expected = -np.mean( (12.0 - relevant_PAEs ) / 12.0 )
     expected = -0.5  # Calculated by hand
-    assert np.isclose(unweighted_energy, expected), (
-        f'unweighted energy is incorrect, expected 0.5, found {unweighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID], expected), (
+        f'unweighted energy is incorrect, expected 0.5, found {result.objectives[DEFAULT_OBJECTIVE_ID]}'
     )
-    assert np.isclose(weighted_energy, 2.0 * expected), (
-        f'weighted energy is incorrect, expected {2.0 * expected}, found {weighted_energy}'
+    assert np.isclose(result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight, 2.0 * expected), (
+        f'weighted energy is incorrect, expected {2.0 * expected}, found {result.objectives[DEFAULT_OBJECTIVE_ID] * energy.weight}'
     )

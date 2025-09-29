@@ -9,13 +9,14 @@ Copyright (c) 2025 Jakub Lála, Ayham Al-Saffar, Stefano Angioletti-Uberti
 from . import __version__ as bagel_version
 from .state import State
 from .chain import Chain, Residue
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Sequence
 
+from .objectives import DEFAULT_OBJECTIVE_ID, ObjectiveSpec, aggregate_values, default_objective_specs
 from .oracles.folding import FoldingOracle, FoldingResult
 from .constants import aa_dict
 from copy import deepcopy
 import pathlib as pl
-import numpy as np
 
 import logging
 
@@ -30,23 +31,40 @@ class System:
     states: list[State]
     name: str | None = None
     total_energy: float | None = None
+    objective_specs: dict[str, ObjectiveSpec] = field(default_factory=default_objective_specs)
+    _objective_totals: dict[str, float] = field(default_factory=dict, init=False)
 
     def __copy__(self) -> 'System':
         """Copy the system object, setting the energy to None"""
         return deepcopy(self)
 
-    def get_total_energy(self) -> float:
-        if self.total_energy is None:
-            self.total_energy = np.sum([state.get_energy() for state in self.states])
-        return self.total_energy
+    def evaluate(self, objective_ids: Sequence[str]) -> dict[str, float]:
+        """Evaluate the requested objectives across all states."""
+
+        totals: dict[str, float] = {}
+        for state in self.states:
+            state.get_energy(self.objective_specs)
+
+        for objective_id in objective_ids:
+            spec = self.objective_specs.get(objective_id)
+            if spec is None:
+                raise KeyError(f'Objective {objective_id} not configured in system.')
+            state_values = [state._objective_metrics_weighted.get(objective_id, 0.0) for state in self.states]
+            totals[objective_id] = aggregate_values(state_values, spec.aggregation)
+
+        self._objective_totals = totals
+        self.total_energy = totals.get(DEFAULT_OBJECTIVE_ID)
+        return totals
 
     def dump_logs(self, step: int, path: pl.Path, save_structure: bool = True) -> None:
         r"""
         Saves logging information for the system under the given directory path. This folder contains:
 
-        - a CSV file named 'energies.csv'. Columns include 'step', '\<state.name\>_\<energy.name\>' for all energies,
-          '\<state.name\>_energy' and 'system_energy'. Note the final
-          column is the sum of the mean weighted energies of each state.
+        - a CSV file named 'energies.csv'. Columns include 'step',
+          '\<state\>:\<term\>:objectives:\<objective\>' for per-term metrics,
+          '\<state\>:objective:\<objective\>' for aggregated state objectives,
+          '\<state\>:state_energy', and 'system:objective:\<objective\>' along
+          with the legacy 'system_energy' column.
         - a FASTA file for all sequences named '\<state.name\>.fasta'. Each header is the sequence's step and each
         sequence is a string of amino acid letters with : seperating each chain.
         - a FASTA file of per-residue mutability masks named '\<state.name\>.mask.fasta'. Each header is the
@@ -66,7 +84,7 @@ class System:
         save_structure: bool, default=True
             Whether to save the CIF file of each state.
         """
-        assert self.total_energy is not None, 'System energy not calculated. Call get_total_energy() first.'
+        assert self.total_energy is not None, 'System energy not calculated. Call evaluate() first.'
 
         structure_path = path / 'structures'
         if step == 0:
@@ -77,10 +95,18 @@ class System:
 
         energies: dict[str, int | float] = {'step': step}  #  order of insertion consistent in every dump_logs call
         for state in self.states:
-            for energy_name, energy_value in state._energy_terms_value.items():
-                energies[f'{state.name}:{energy_name}'] = energy_value
+            for term_name, term_metrics in state._energy_terms_value.items():
+                for category, metrics in term_metrics.items():
+                    for metric_id, metric_value in metrics.items():
+                        energies[f'{state.name}:{term_name}:{category}:{metric_id}'] = metric_value
+            for objective_id, value in state._objective_metrics_weighted.items():
+                energies[f'{state.name}:objective:{objective_id}'] = value
+            for objective_id, value in state._objective_metrics_raw.items():
+                energies[f'{state.name}:objective_raw:{objective_id}'] = value
+            for constraint_id, value in state._constraint_metrics_weighted.items():
+                energies[f'{state.name}:constraint:{constraint_id}'] = value
             assert state._energy is not None, 'State energy not calculated. Call get_energy() first.'
-            energies[f'{state.name}:state_energy'] = state._energy  # HACK
+            energies[f'{state.name}:state_energy'] = state._energy  # Legacy column
 
             with open(path / f'{state.name}.fasta', mode='a') as file:
                 file.write(f'>{step}\n')
@@ -103,6 +129,9 @@ class System:
                         logger.debug(
                             f'Skipping {oracle.__class__.__name__} for CIF export, as it is not a FoldingOracle'
                         )
+
+        for objective_id, total in self._objective_totals.items():
+            energies[f'system:objective:{objective_id}'] = total
 
         energies['system_energy'] = self.total_energy
 

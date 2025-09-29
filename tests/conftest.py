@@ -8,6 +8,7 @@ import pathlib as pl
 from biotite.structure import AtomArray, Atom, array, concatenate
 from biotite.structure.io import load_structure
 import bagel as bg
+from bagel.objectives import DEFAULT_OBJECTIVE_ID
 
 
 def pytest_addoption(parser):
@@ -212,8 +213,8 @@ def small_structure_state(
         local_plddt=np.zeros(len(small_structure))[None, :],
     )
     state._energy_terms_value = {
-        energy_terms[0].name: -0.7,
-        energy_terms[1].name: 0.2,
+        energy_terms[0].name: {'objectives': {DEFAULT_OBJECTIVE_ID: -0.7}},
+        energy_terms[1].name: {'objectives': {DEFAULT_OBJECTIVE_ID: 0.2}},
     }
     state._oracles_result = bg.oracles.OraclesResultDict()
     state._oracles_result[state.oracles_list[0]] = folding_result
@@ -413,8 +414,8 @@ def mixed_structure_state(
     )
     state._energy = 0.1
     state._energy_terms_value = {
-        energy_terms[0].name: -0.4,
-        energy_terms[1].name: 0.5,
+        energy_terms[0].name: {'objectives': {DEFAULT_OBJECTIVE_ID: -0.4}},
+        energy_terms[1].name: {'objectives': {DEFAULT_OBJECTIVE_ID: 0.5}},
     }
     state._oracles_result = bg.oracles.OraclesResultDict()
     state._oracles_result[state.oracles_list[0]] = folding_result
@@ -482,8 +483,8 @@ def simple_state(fake_esmfold: bg.oracles.folding.ESMFold) -> bg.State:
     )
     state._structure = AtomArray(length=len(residues))
     state._energy_terms_value = {
-        state.energy_terms[0].name: -1.0,
-        state.energy_terms[1].name: -0.5,
+        state.energy_terms[0].name: {'objectives': {DEFAULT_OBJECTIVE_ID: -1.0}},
+        state.energy_terms[1].name: {'objectives': {DEFAULT_OBJECTIVE_ID: -0.5}},
     }
     return state
 

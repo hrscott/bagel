@@ -1,9 +1,10 @@
 from unittest.mock import patch, Mock
 import numpy as np
 import bagel as bg
+from bagel.objectives import DEFAULT_OBJECTIVE_ID
 
 
-@patch.object(bg.System, 'get_total_energy')  # prevents unnecessary folding
+@patch.object(bg.System, 'evaluate')  # prevents unnecessary folding
 def test_GrandCanonical_MutationProtocol_one_step_method_gives_correct_output_for_addition_move(
     mocked_calculate_method: Mock,
     energies_system: bg.System,
@@ -24,7 +25,7 @@ def test_GrandCanonical_MutationProtocol_one_step_method_gives_correct_output_fo
             assert num_tracked_res == num_res, f'incorrect number of energy terms in {state_type} state'
 
 
-@patch.object(bg.System, 'get_total_energy')  # prevents unnecessary folding
+@patch.object(bg.System, 'evaluate')  # prevents unnecessary folding
 def test_GrandCanonical_MutationProtocol_one_step_method_gives_correct_output_for_removal_move(
     mocked_calculate_method: Mock,
     energies_system: bg.System,
@@ -43,7 +44,7 @@ def test_GrandCanonical_MutationProtocol_one_step_method_gives_correct_output_fo
             assert num_tracked_res == num_res, f'incorrect number of energy terms in {state_type} state'
 
 
-@patch.object(bg.System, 'get_total_energy')  # prevents unnecessary folding
+@patch.object(bg.System, 'evaluate')  # prevents unnecessary folding
 def test_GrandCanonical_MutationProtocol_does_not_remove_all_residues_in_chain(
     mocked_calculate_method: Mock, fake_esmfold: bg.oracles.folding.ESMFold, residues: list[bg.Residue]
 ) -> None:
@@ -63,23 +64,26 @@ def test_mutation_protocol_resets_system_total_energy(
     real_simple_state: bg.State,
 ) -> None:
     system = bg.System(states=[real_simple_state, real_simple_state])
-    system.get_total_energy()
+    system.evaluate([DEFAULT_OBJECTIVE_ID])
     assert system.total_energy is not None, 'system total energy is None'
     assert system.total_energy + 1.4 < 0.5, 'system total energy is not correct'
 
     for state in system.states:
-        assert len(state._energy_terms_value) == 2, 'system energy terms value is not correct'
+        assert state._energy_terms_value, 'system energy terms value is not correct'
         assert state._oracles_result is not None, 'system oracles result is None'
         assert len(state._oracles_result) == 1, 'system oracles result is not correct'
+        assert state._objective_metrics_weighted, 'objective metrics not cached'
 
     mutator = bg.mutation.Canonical()
     mutator.reset_system(system)
     assert system.total_energy is None, 'system total energy not reset'
+    assert system._objective_totals == {}, 'objective totals not reset'
 
     for state in system.states:
         assert len(state._energy_terms_value) == 0, 'system energy terms value is not correct'
         assert state._oracles_result is not None, 'system oracles result is None'
         assert len(state._oracles_result) == 0, 'system oracles result is not correct'
+        assert state._objective_metrics_weighted == {}, 'state objective metrics not reset'
 
 
 def test_mutate_random_residue_excludes_self_when_flag_true() -> None:

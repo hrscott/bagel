@@ -7,13 +7,14 @@ Copyright (c) 2025 Jakub Lála, Ayham Al-Saffar, Stefano Angioletti-Uberti
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 import warnings
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-from typing import Literal, Callable
-from biotite.structure import AtomArray, sasa, annotate_sse, superimpose
+from typing import Callable, Literal
+from biotite.structure import AtomArray, annotate_sse, sasa, superimpose
 
 from .constants import hydrophobic_residues, max_sasa_values, probe_radius_water, backbone_atoms
 from .chain import Residue, Chain
@@ -21,6 +22,7 @@ from .oracles import Oracle, OracleResult, OraclesResultDict
 from .oracles.folding import FoldingResult, FoldingOracle
 from .oracles.embedding import EmbeddingResult, EmbeddingOracle
 from .oracles.folding.utils import reorder_atoms_in_template
+from .objectives import DEFAULT_OBJECTIVE_ID
 
 
 # first row is chain_ids and second row is corresponding residue indices.
@@ -30,6 +32,14 @@ ResidueGroup = tuple[npt.NDArray[np.str_], npt.NDArray[np.int_]]
 def residue_list_to_group(residues: list[Residue]) -> ResidueGroup:
     """Converts list of residue objects to ResidueGroup required by energy term objects"""
     return (np.array([res.chain_ID for res in residues]), np.array([res.index for res in residues]))
+
+
+@dataclass
+class EnergyTermResult:
+    """Structured output of an energy term calculation."""
+
+    objectives: dict[str, float]
+    constraints: dict[str, float] = field(default_factory=dict)
 
 
 class EnergyTerm(ABC):
@@ -92,9 +102,9 @@ class EnergyTerm(ABC):
         assert isinstance(self.oracle, Oracle), 'oracle attribute must be an instance of Oracle'
 
     @abstractmethod
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         """
-        Calculates the EnergyTerm's energy given information about the folded structure.
+        Calculates the EnergyTerm's contribution given information about the folded structure.
         The result is returned and stored as an internal attribute (.value).
 
         Parameters
@@ -105,11 +115,10 @@ class EnergyTerm(ABC):
 
         Returns
         -------
-        (unweighted_energy, weighted_energy) : tuple[float, float]
-            unweighted_energy : float
-                How well the structure satisfies the given criteria. Where possible, this number should be between 0 and 1.
-            weighted_energy : float
-        The unweighted energy multiplied by the energy term's weight.
+        EnergyTermResult
+            Structured metrics for the energy term. If subclasses only return a
+            single scalar this should be keyed by the ``"total_energy"``
+            objective to maintain legacy compatibility.
         """
         pass
 
@@ -219,11 +228,11 @@ class PTMEnergy(EnergyTerm):
         assert isinstance(self.oracle, FoldingOracle), 'Oracle must be an instance of FoldingOracle'
         assert 'ptm' in self.oracle.result_class.model_fields, 'PTMEnergy requires oracle to return ptm in result_class'
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         folding_result = oracles_result[self.oracle]
         assert hasattr(folding_result, 'ptm'), 'PTM metric not returned by folding algorithm'
         value = -folding_result.ptm
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class ChemicalPotentialEnergy(EnergyTerm):
@@ -280,14 +289,14 @@ class ChemicalPotentialEnergy(EnergyTerm):
             'ChemicalPotentialEnergy requires oracle to return input_chains in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         input_chains = oracles_result.get_input_chains(self.oracle)  # get the input chains from the oracle result
 
         # Count all residues in all input chains
         num_residues = sum(chain.length for chain in input_chains)
         value = self.chemical_potential * (abs(num_residues - self.target_size)) ** self.power
 
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class PLDDTEnergy(EnergyTerm):
@@ -344,7 +353,7 @@ class PLDDTEnergy(EnergyTerm):
             'PLDDTEnergy requires oracle to return local_plddt in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         folding_result = oracles_result[self.oracle]
         assert hasattr(folding_result, 'local_plddt'), 'local_plddt metric not returned by folding algorithm'
         assert folding_result.local_plddt.shape[0] == 1, 'batch size equal to 1 is required'
@@ -356,7 +365,7 @@ class PLDDTEnergy(EnergyTerm):
             n_residues = sum([c.length for c in folding_result.input_chains])
             mask = np.full(shape=n_residues, fill_value=True)
         value = -np.mean(plddt[mask])
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class OverallPLDDTEnergy(PLDDTEnergy):
@@ -437,7 +446,7 @@ class SurfaceAreaEnergy(EnergyTerm):
             'SurfaceAreaEnergy requires oracle to return structure in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         structure = oracles_result.get_structure(self.oracle)
         if len(self.residue_groups) != 0:
             atom_mask: npt.NDArray[np.bool_] = self.get_atom_mask(structure, residue_group_index=0)
@@ -446,7 +455,7 @@ class SurfaceAreaEnergy(EnergyTerm):
 
         sasa_values = sasa(structure, probe_radius=self.probe_radius)
         value = np.mean(sasa_values[atom_mask]) / self.max_sasa
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class HydrophobicEnergy(EnergyTerm):
@@ -520,7 +529,7 @@ class HydrophobicEnergy(EnergyTerm):
             'HydrophobicEnergy requires oracle to return structure in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         structure = oracles_result.get_structure(self.oracle)
         if len(self.residue_groups) > 0:
             relevance_mask: npt.NDArray[np.bool_] = self.get_atom_mask(structure, residue_group_index=0)
@@ -538,7 +547,7 @@ class HydrophobicEnergy(EnergyTerm):
             normalized_sasa = 1.0 - sasa(structure, probe_radius=probe_radius_water) / max_sasa_values['S']
             value *= np.mean(normalized_sasa[relevance_mask & hydrophobic_mask])
 
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class PAEEnergy(EnergyTerm):
@@ -592,7 +601,7 @@ class PAEEnergy(EnergyTerm):
         assert isinstance(self.oracle, FoldingOracle), 'Oracle must be an instance of FoldingOracle'
         assert 'pae' in self.oracle.result_class.model_fields, 'PAEEnergy requires oracle to return pae in result_class'
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         folding_result = oracles_result[self.oracle]
         structure = oracles_result.get_structure(self.oracle)
         assert hasattr(folding_result, 'pae'), 'pae metric not returned by folding algorithm'
@@ -615,7 +624,7 @@ class PAEEnergy(EnergyTerm):
         pae_mask[diagonal_mask] = False  # should ignore uncertainty in distance between atom and itself
 
         value = np.mean(pae[pae_mask]) / max_pae
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class LISEnergy(EnergyTerm):
@@ -672,7 +681,7 @@ class LISEnergy(EnergyTerm):
         assert isinstance(self.oracle, FoldingOracle), 'Oracle must be an instance of FoldingOracle'
         assert 'pae' in self.oracle.result_class.model_fields, 'PAEEnergy requires oracle to return pae in result_class'
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         folding_result = oracles_result[self.oracle]
         structure = oracles_result.get_structure(self.oracle)
         assert hasattr(folding_result, 'pae'), 'pae metric not returned by folding algorithm'
@@ -706,11 +715,11 @@ class LISEnergy(EnergyTerm):
             if self.intensive:
                 value = -np.mean(lis_scores)  # Negative because you want to be interpreted as an energy
             else:
-                # 0.5 is to avoid double-counting of LIS pairs, which you would if PAE(ij) is asymmetric due 
+                # 0.5 is to avoid double-counting of LIS pairs, which you would if PAE(ij) is asymmetric due
                 # to masking above
-                value = - 0.5 * np.sum(lis_scores)  # Negative because you want to be interpreted as an energy
+                value = -0.5 * np.sum(lis_scores)  # Negative because you want to be interpreted as an energy
 
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class RingSymmetryEnergy(EnergyTerm):
@@ -764,7 +773,7 @@ class RingSymmetryEnergy(EnergyTerm):
             'RingSymmetryEnergy requires oracle to return structure in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         structure = oracles_result.get_structure(self.oracle)
         num_groups = len(self.residue_groups)
         centroids = np.zeros(shape=(num_groups, 3))
@@ -783,7 +792,7 @@ class RingSymmetryEnergy(EnergyTerm):
             unique_distances = distance_matrix[~np.tri(N=num_groups, dtype=bool)]
             value = np.std(unique_distances)
 
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class SeparationEnergy(EnergyTerm):
@@ -836,7 +845,7 @@ class SeparationEnergy(EnergyTerm):
             'SeparationEnergy requires oracle to return structure in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         structure = oracles_result.get_structure(self.oracle)
         backbone_mask = np.isin(structure.atom_name, backbone_atoms)
         group_1_mask = self.get_atom_mask(structure, residue_group_index=0)
@@ -852,7 +861,7 @@ class SeparationEnergy(EnergyTerm):
         if self.function is not None:
             value = float(self.function(float(distance)))
 
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class FlexEvoBindEnergy(EnergyTerm):
@@ -921,7 +930,7 @@ class FlexEvoBindEnergy(EnergyTerm):
             'FlexEvoBindEnergy requires oracle to return structure in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         structure = oracles_result.get_structure(self.oracle)
 
         if self.symmetrized:
@@ -997,8 +1006,8 @@ class FlexEvoBindEnergy(EnergyTerm):
         # calculate the (weighted) average over saved values
         total_count = sum(counts_list)
         value = float(np.sum(values_list) / total_count) if total_count > 0 else 0.0
-            
-        return value, value * self.weight
+
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class GlobularEnergy(EnergyTerm):
@@ -1046,7 +1055,7 @@ class GlobularEnergy(EnergyTerm):
             'GlobularEnergy requires oracle to return structure in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         structure = oracles_result.get_structure(self.oracle)
         backbone_mask = np.isin(structure.atom_name, backbone_atoms)
         if len(self.residue_groups) > 0:
@@ -1059,7 +1068,7 @@ class GlobularEnergy(EnergyTerm):
         centroid_distances = np.linalg.norm(relevant_atoms.coord - centroid, axis=1)
 
         value = np.std(centroid_distances)
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class TemplateMatchEnergy(EnergyTerm):
@@ -1117,7 +1126,7 @@ class TemplateMatchEnergy(EnergyTerm):
             'TemplateMatchEnergy requires oracle to return structure in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         structure = oracles_result.get_structure(self.oracle)
         structure_atoms = structure[self.get_atom_mask(structure, residue_group_index=0)]
         template_atoms = reorder_atoms_in_template(self.template_atoms)
@@ -1141,7 +1150,7 @@ class TemplateMatchEnergy(EnergyTerm):
             separation = np.mean(unique_distance_matrix_differences**2) ** 0.5
 
         value = separation
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: value})
 
 
 class SecondaryStructureEnergy(EnergyTerm):
@@ -1196,14 +1205,14 @@ class SecondaryStructureEnergy(EnergyTerm):
             'SecondaryStructureEnergy requires oracle to return structure in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         structure = oracles_result.get_structure(self.oracle)
         target_label = self.target_secondary_structure[0]  # How Biotite labels secondary structures
         calculated_labels = annotate_sse(structure)
         selection_mask = self.get_residue_mask(structure, residue_group_index=0)
 
         value = np.mean(calculated_labels[selection_mask] != target_label)
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: float(value)})
 
 
 class EmbeddingsSimilarityEnergy(EnergyTerm):
@@ -1258,7 +1267,7 @@ class EmbeddingsSimilarityEnergy(EnergyTerm):
             'EmbeddingsSimilarityEnergy requires oracle to return embeddings in result_class'
         )
 
-    def compute(self, oracles_result: OraclesResultDict) -> tuple[float, float]:
+    def compute(self, oracles_result: OraclesResultDict) -> EnergyTermResult:
         embeddings = oracles_result.get_embeddings(self.oracle)
         chains = oracles_result[self.oracle].input_chains
         assert isinstance(embeddings, np.ndarray), (
@@ -1285,7 +1294,7 @@ class EmbeddingsSimilarityEnergy(EnergyTerm):
         similarity = np.mean(cosine)
 
         value = 1.0 - similarity
-        return value, value * self.weight
+        return EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: float(value)})
 
     def conserved_index_list(self, chains: list[Chain]) -> list[int]:
         """Returns the indices of the conserved residues (stored in .residue_group[0]) in the pLM embedding array."""

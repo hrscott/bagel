@@ -2,6 +2,7 @@ import bagel as bg
 import numpy as np
 from biotite.structure import AtomArray
 import pytest
+from bagel.objectives import DEFAULT_OBJECTIVE_ID
 
 
 def test_state_remove_residue_from_all_energy_terms_removes_correct_residue(mixed_structure_state: bg.State) -> None:
@@ -69,8 +70,7 @@ def test_state_get_energy(fake_esmfold: bg.oracles.folding.ESMFold, monkeypatch)
     # Create mock energy terms with different weights
     class MockEnergyTerm(bg.energies.EnergyTerm):
         def compute(self, oracles_result):
-            # Return both unweighted and weighted energies
-            return 1.0, 1.0 * self.weight
+            return bg.energies.EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: 1.0})
 
     # Test 1: First call - should calculate everything from scratch
     energy_term1 = MockEnergyTerm(
@@ -92,7 +92,12 @@ def test_state_get_energy(fake_esmfold: bg.oracles.folding.ESMFold, monkeypatch)
     energy = state.get_energy()
     assert energy == 5.0  # 1.0 * 2.0 + 1.0 * 3.0
     assert state._energy == 5.0
-    assert state._energy_terms_value == {'MockEnergyTerm1': 1.0, 'MockEnergyTerm2': 1.0}
+    assert state._objective_metrics_weighted == {DEFAULT_OBJECTIVE_ID: 5.0}
+    assert state._objective_metrics_raw == {DEFAULT_OBJECTIVE_ID: 2.0}
+    assert state._energy_terms_value == {
+        'MockEnergyTerm1': {'objectives': {DEFAULT_OBJECTIVE_ID: 1.0}},
+        'MockEnergyTerm2': {'objectives': {DEFAULT_OBJECTIVE_ID: 1.0}},
+    }
     assert fake_esmfold in state._oracles_result
 
     # Test 2: Second call - should use cached values

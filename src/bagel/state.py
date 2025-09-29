@@ -6,17 +6,25 @@ MIT License
 Copyright (c) 2025 Jakub Lála, Ayham Al-Saffar, Stefano Angioletti-Uberti
 """
 
-from .chain import Chain
-from .oracles import Oracle, FoldingOracle, OraclesResultDict
-from .energies import EnergyTerm
-from typing import Optional
-from pathlib import Path
-from biotite.structure.io.pdbx import CIFFile, set_structure
-from dataclasses import dataclass, field
-from typing import List, Any
+from collections import defaultdict
 from copy import deepcopy
-import numpy as np
+from dataclasses import dataclass, field
 import logging
+from pathlib import Path
+from typing import Any, List, Optional
+
+import numpy as np
+from biotite.structure.io.pdbx import CIFFile, set_structure
+
+from .chain import Chain
+from .energies import EnergyTerm, EnergyTermResult
+from .objectives import (
+    DEFAULT_OBJECTIVE_ID,
+    ObjectiveSpec,
+    aggregate_values,
+    default_objective_specs,
+)
+from .oracles import FoldingOracle, Oracle, OraclesResultDict
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +50,20 @@ class State:
         Cached total (weighted) energy value for the State.
     _oracles_result : dict[Oracle, OracleResult]
         Results of different oracles, e.g., folding, embedding, etc.
-    _energy_terms_value : dict[(str, float)]
-        Cached (unweighted)values of individual :class:`.EnergyTerm` objects.
+    _energy_terms_value : dict[str, dict[str, dict[str, float]]]
+        Cached raw objective and constraint metrics for individual
+        :class:`.EnergyTerm` objects.
+    objective_specs : dict[str, :class:`.ObjectiveSpec`]
+        Per-objective aggregation rules applied within this state.
+    _objective_metrics_weighted : dict[str, float]
+        Aggregated objective values after applying energy term weights and
+        objective weights.
+    _objective_metrics_raw : dict[str, float]
+        Aggregated objective values before applying the objective weights.
+    _constraint_metrics_weighted : dict[str, float]
+        Aggregated constraint values after weighting.
+    _constraint_metrics_raw : dict[str, float]
+        Aggregated constraint values before weighting.
     """
 
     name: str
@@ -51,11 +71,17 @@ class State:
     energy_terms: List[EnergyTerm]
     _energy: Optional[float] = field(default=None, init=False)
     _oracles_result: OraclesResultDict = field(default_factory=lambda: OraclesResultDict(), init=False)
-    _energy_terms_value: dict[(str, float)] = field(default_factory=lambda: {}, init=False)
+    _energy_terms_value: dict[str, dict[str, dict[str, float]]] = field(default_factory=dict, init=False)
+    objective_specs: dict[str, ObjectiveSpec] | None = field(default=None)
+    _objective_metrics_weighted: dict[str, float] = field(default_factory=dict, init=False)
+    _objective_metrics_raw: dict[str, float] = field(default_factory=dict, init=False)
+    _constraint_metrics_weighted: dict[str, float] = field(default_factory=dict, init=False)
+    _constraint_metrics_raw: dict[str, float] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         """Sanity check."""
-        return
+        if self.objective_specs is None:
+            self.objective_specs = default_objective_specs()
 
     def __copy__(self) -> Any:
         """Copy the state object, setting the structure and energy to None."""
@@ -69,30 +95,74 @@ class State:
     def total_sequence(self) -> List[str]:
         return [chain.sequence for chain in self.chains]
 
-    def get_energy(self) -> float:
-        """Calculate energy of state using energy terms ."""
-        if self._energy_terms_value == {}:  # If energies not yet calculated
-            # Check if the output of the oracle is already calculated, otherwise calculate it
+    def get_energy(self, objective_specs: dict[str, ObjectiveSpec] | None = None) -> float:
+        """Calculate energy of state using energy terms."""
+        if not self._oracles_result:
             for oracle in self.oracles_list:
                 if oracle not in self._oracles_result:
                     self._oracles_result[oracle] = oracle.predict(chains=self.chains)
 
-        # Check that all energy term names are unique
+        specs = objective_specs or self.objective_specs or default_objective_specs()
+        self.objective_specs = specs
+
         energy_term_names = [term.name for term in self.energy_terms]
         assert len(energy_term_names) == len(set(energy_term_names)), (
             f"Energy term names must be unique. Found duplicates: {energy_term_names}. Please rename using 'name'."
         )
 
-        total_energy = 0.0
+        per_objective_raw: dict[str, list[float]] = defaultdict(list)
+        per_objective_weighted: dict[str, list[float]] = defaultdict(list)
+        per_constraint_raw: dict[str, list[float]] = defaultdict(list)
+        per_constraint_weighted: dict[str, list[float]] = defaultdict(list)
+
+        self._energy_terms_value = {}
+
         for term in self.energy_terms:
-            unweighted_energy, weighted_energy = term.compute(oracles_result=self._oracles_result)
-            total_energy += weighted_energy
-            self._energy_terms_value[term.name] = unweighted_energy
-            logger.debug(f'Energy term {term.name} has value {unweighted_energy}')
+            result: EnergyTermResult = term.compute(oracles_result=self._oracles_result)
+            term_metrics: dict[str, dict[str, float]] = {'objectives': dict(result.objectives)}
+            if result.constraints:
+                term_metrics['constraints'] = dict(result.constraints)
+            self._energy_terms_value[term.name] = term_metrics
 
-        self._energy = total_energy
+            for objective_id, value in result.objectives.items():
+                per_objective_raw[objective_id].append(float(value))
+                per_objective_weighted[objective_id].append(float(value) * term.weight)
+            for constraint_id, value in result.constraints.items():
+                per_constraint_raw[constraint_id].append(float(value))
+                per_constraint_weighted[constraint_id].append(float(value) * term.weight)
+            logger.debug(f'Energy term {term.name} objectives: {result.objectives}')
 
-        logger.debug(f'**Weighted** energy for state {self.name} is {self._energy}')
+        aggregated_weighted: dict[str, float] = {}
+        aggregated_raw: dict[str, float] = {}
+        constraint_weighted: dict[str, float] = {}
+        constraint_raw: dict[str, float] = {}
+
+        for objective_id, spec in specs.items():
+            raw_values = per_objective_raw.get(objective_id, [])
+            weighted_values = per_objective_weighted.get(objective_id, [])
+            raw_value = aggregate_values(raw_values, spec.aggregation)
+            weighted_value = aggregate_values(weighted_values, spec.aggregation) * spec.weight
+            aggregated_raw[objective_id] = raw_value
+            aggregated_weighted[objective_id] = weighted_value
+
+            for constraint_spec in spec.constraints:
+                raw_constraint_values = per_constraint_raw.get(constraint_spec.constraint_id, [])
+                weighted_constraint_values = per_constraint_weighted.get(constraint_spec.constraint_id, [])
+                raw_constraint = aggregate_values(raw_constraint_values, constraint_spec.aggregation)
+                weighted_constraint = (
+                    aggregate_values(weighted_constraint_values, constraint_spec.aggregation) * constraint_spec.weight
+                )
+                constraint_raw[constraint_spec.constraint_id] = raw_constraint
+                constraint_weighted[constraint_spec.constraint_id] = weighted_constraint
+
+        self._objective_metrics_weighted = aggregated_weighted
+        self._objective_metrics_raw = aggregated_raw
+        self._constraint_metrics_weighted = constraint_weighted
+        self._constraint_metrics_raw = constraint_raw
+
+        self._energy = aggregated_weighted.get(DEFAULT_OBJECTIVE_ID, 0.0)
+
+        logger.debug(f'**Weighted** objective metrics for state {self.name}: {aggregated_weighted}')
 
         return self._energy
 
