@@ -216,6 +216,10 @@ def small_structure_state(
         energy_terms[0].name: {'objectives': {DEFAULT_OBJECTIVE_ID: -0.7}},
         energy_terms[1].name: {'objectives': {DEFAULT_OBJECTIVE_ID: 0.2}},
     }
+    state._objective_metrics_weighted = {DEFAULT_OBJECTIVE_ID: -0.5}
+    state._objective_metrics_raw = {DEFAULT_OBJECTIVE_ID: -0.5}
+    state._constraint_metrics_weighted = {}
+    state._constraint_metrics_raw = {}
     state._oracles_result = bg.oracles.OraclesResultDict()
     state._oracles_result[state.oracles_list[0]] = folding_result
     return state
@@ -417,6 +421,10 @@ def mixed_structure_state(
         energy_terms[0].name: {'objectives': {DEFAULT_OBJECTIVE_ID: -0.4}},
         energy_terms[1].name: {'objectives': {DEFAULT_OBJECTIVE_ID: 0.5}},
     }
+    state._objective_metrics_weighted = {DEFAULT_OBJECTIVE_ID: 0.1}
+    state._objective_metrics_raw = {DEFAULT_OBJECTIVE_ID: 0.1}
+    state._constraint_metrics_weighted = {}
+    state._constraint_metrics_raw = {}
     state._oracles_result = bg.oracles.OraclesResultDict()
     state._oracles_result[state.oracles_list[0]] = folding_result
     return state
@@ -429,6 +437,7 @@ def mixed_system(small_structure_state: bg.State, mixed_structure_state: bg.Stat
         name='mixed_system',
     )
     system.total_energy = -0.4
+    system._objective_totals = {DEFAULT_OBJECTIVE_ID: -0.4}
     return system
 
 

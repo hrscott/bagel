@@ -62,6 +62,7 @@ def test_system_dump_logs_folder_is_correct(mixed_system: bg.System) -> None:
     experiment_folder = mock_output_folder / mock_experiment
     if experiment_folder.exists():  # clean data folder if it exists
         shutil.rmtree(experiment_folder)
+    experiment_folder.mkdir(parents=True, exist_ok=True)
 
     # Ensure system energy is calculated
     assert mixed_system.total_energy is not None, 'System energy should be calculated before dumping logs'
@@ -103,12 +104,17 @@ def test_system_dump_logs_folder_is_correct(mixed_system: bg.System) -> None:
     correct_energies = pd.DataFrame(
         {
             'step': [mock_step],
-            'small:pTM': [-0.7],
-            'small:selective_surface_area': [0.2],
-            'mixed:local_pLDDT': [-0.4],
-            'mixed:cross_PAE': [0.5],
+            'small:pTM:objectives:total_energy': [-0.7],
+            'small:selective_surface_area:objectives:total_energy': [0.2],
+            'mixed:local_pLDDT:objectives:total_energy': [-0.4],
+            'mixed:cross_PAE:objectives:total_energy': [0.5],
+            'small:objective:total_energy': [-0.5],
+            'small:objective_raw:total_energy': [-0.5],
+            'mixed:objective:total_energy': [0.1],
+            'mixed:objective_raw:total_energy': [0.1],
             'small:state_energy': [-0.5],
             'mixed:state_energy': [0.1],
+            'system:objective:total_energy': [-0.4],
             'system_energy': [-0.4],
         }
     )

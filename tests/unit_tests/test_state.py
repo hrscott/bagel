@@ -179,8 +179,7 @@ def test_state_get_energy(fake_esmfold: bg.oracles.folding.ESMFold, monkeypatch)
 
     class MultiOracleEnergyTerm(bg.energies.EnergyTerm):
         def compute(self, oracles_result):
-            # Just return 1.0 for both weighted and unweighted
-            return 1.0, 1.0
+            return bg.energies.EnergyTermResult(objectives={DEFAULT_OBJECTIVE_ID: 1.0})
 
     oracle_a = MockOracleA()
     oracle_b = MockOracleB()
@@ -201,7 +200,7 @@ def test_state_get_energy(fake_esmfold: bg.oracles.folding.ESMFold, monkeypatch)
     multi_oracle_state = bg.State(name='multi_oracle_state', chains=[chain], energy_terms=[term_a, term_b])
 
     energy = multi_oracle_state.get_energy()
-    assert energy == 2.0  # 1.0 + 2.0
+    assert energy == 3.0  # (1.0 * 1.0) + (1.0 * 2.0)
     assert len(multi_oracle_state._oracles_result) == 2  # Should have results from both oracles
     assert oracle_a in multi_oracle_state._oracles_result
     assert oracle_b in multi_oracle_state._oracles_result
